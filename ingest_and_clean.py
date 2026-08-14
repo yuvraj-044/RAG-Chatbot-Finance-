@@ -250,8 +250,8 @@ class TransactionDataCleaner:
     """
 
     # Threshold: files larger than this will be sampled
-    _LARGE_FILE_THRESHOLD = 50 * 1024 * 1024   # 50 MB
-    _LARGE_FILE_SAMPLE    = 5000               # max rows
+    _LARGE_FILE_THRESHOLD = 5 * 1024 * 1024   # 5 MB
+    _LARGE_FILE_SAMPLE    = 3000              # max rows
 
     def load_and_clean(self, filepath: Path) -> pd.DataFrame:
         logger.info("Loading transaction dataset: %s", filepath.name)
@@ -335,8 +335,8 @@ class MarketDataCleaner:
     Covers : Market index prices, volumes, historical OHLCV data.
     """
 
-    _LARGE_FILE_THRESHOLD = 20 * 1024 * 1024   # 20 MB
-    _LARGE_FILE_SAMPLE    = 2000               # max rows
+    _LARGE_FILE_THRESHOLD = 5 * 1024 * 1024   # 5 MB
+    _LARGE_FILE_SAMPLE    = 3000              # max rows
 
     def load_csv(self, filepath: Path) -> pd.DataFrame:
         logger.info("Loading market CSV: %s", filepath.name)
