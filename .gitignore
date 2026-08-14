@@ -1,0 +1,38 @@
+# .gitignore
+# -----------
+# Keep secrets and generated files out of version control.
+
+# --- Environment / secrets ---
+.env
+*.env
+!.env.example        # but DO commit the example template
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# --- ChromaDB data ---
+# Uncomment the line below if the index is too large to commit.
+# Your teammate should provide it as a separate artifact.
+# chroma_db/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# --- Test artifacts ---
+.pytest_cache/
+htmlcov/
+.coverage

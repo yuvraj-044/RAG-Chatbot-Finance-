@@ -1,0 +1,31 @@
+# requirements.txt
+# -----------------
+# Pinned to minor versions (e.g. fastapi==0.111.*) — tight enough to avoid
+# breaking changes mid-hackathon, loose enough to get security patches.
+#
+# Install: pip install -r requirements.txt
+
+# --- Web framework ---
+fastapi==0.111.1            # The API framework
+uvicorn[standard]==0.30.1   # ASGI server (the [standard] extra adds websocket support)
+
+# --- Config / secrets ---
+python-dotenv==1.0.1        # Loads .env file in local dev
+
+# --- Groq LLM client ---
+# Groq uses the same interface as OpenAI's SDK — easy to swap if needed.
+groq==0.9.0
+
+# --- ChromaDB (vector database) ---
+# chromadb bundles its own embedding functions, but we only use it for querying
+# (your teammate handles embedding during ingestion).
+chromadb==0.5.3
+
+# --- Data validation (already pulled in by FastAPI but pinned for clarity) ---
+pydantic==2.7.4
+
+# --- HTTP client used internally by Groq SDK ---
+httpx==0.27.0
+
+# --- Async support ---
+anyio==4.4.0                # Async primitives (FastAPI depends on this)
