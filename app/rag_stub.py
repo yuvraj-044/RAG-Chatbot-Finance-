@@ -1,28 +1,28 @@
 """
 app/rag_stub.py
 ---------------
-THIS IS THE ONLY FILE YOUR TEAMMATE NEEDS TO TOUCH.
+Interface contract between the FastAPI routes and the RAG pipeline.
+Supports both stub mode for frontend development and real RAG execution
+via rag_chain.py.
 
-It defines the interface contract between your API and the RAG pipeline.
-Right now it returns a hardcoded mock so the frontend team can build
-against a real API immediately.
-
-When your Data & AI teammate is ready, they replace the body of `rag_query`
-with their actual implementation. The function signature MUST stay the same.
-
-CONTRACT (do not change this):
+CONTRACT:
   Input:
     query   : str        — the user's latest message
     history : list[dict] — previous turns: [{"role": "user"|"assistant", "content": "..."}]
 
   Output: dict with keys:
     "answer"  : str        — the LLM-generated response
-    "sources" : list[str]  — list of source document identifiers (filenames, URLs, chunk IDs, etc.)
+    "sources" : list[str]  — list of source document identifiers (filenames, tickers, dates)
 """
 
+import os
+import logging
+
+logger = logging.getLogger(__name__)
+
 # ── Stub mode flag ──────────────────────────────────────────────────────────
-# Set USE_STUB = False once your teammate's real pipeline is wired in.
-USE_STUB = True
+# Set USE_STUB = False to use the real RAG pipeline (can also be toggled via env var)
+USE_STUB = os.environ.get("USE_STUB", "false").lower() in ("true", "1", "yes")
 
 
 # ===========================================================================
@@ -36,40 +36,61 @@ def _stub_rag_query(query: str, history: list[dict]) -> dict:
     return {
         "answer": (
             f"[STUB RESPONSE] You asked: '{query}'. "
-            "The real RAG pipeline will return a Groq-generated answer here, "
+            "The real RAG pipeline will return an LLM-generated answer here, "
             "grounded in retrieved finance documents."
         ),
         "sources": [
-            "annual_report_2023.pdf — page 12",
-            "earnings_call_Q3.txt — paragraph 4",
-            "10K_filing_2024.pdf — section 3.2",
+            "LQ_AAPL_Q3_2024.csv | Ticker: AAPL | Date: 2024-09-30",
+            "Hist_BS_Fin_Stmt.csv | Ticker: MSFT | Date: 2024-06-30",
+            "nse_indexes.csv | Ticker: NIFTY50 | Date: 2024-08-01",
         ],
     }
 
 
 # ===========================================================================
-# REAL IMPLEMENTATION PLACEHOLDER (your teammate fills this in)
+# REAL IMPLEMENTATION (connected to rag_chain.py)
 # ===========================================================================
 def _real_rag_query(query: str, history: list[dict]) -> dict:
     """
-    YOUR TEAMMATE REPLACES THIS BODY with the actual RAG pipeline call.
-
-    Example of what this might look like after handoff:
-
-        from pipeline.retriever import retrieve_chunks
-        from pipeline.generator import generate_answer
-
-        chunks = retrieve_chunks(query, top_k=5)
-        answer = generate_answer(query, chunks, history)
-        sources = [chunk["source"] for chunk in chunks]
-        return {"answer": answer, "sources": sources}
-
-    As long as this returns {"answer": str, "sources": list[str]}, the API
-    will work without any other changes.
+    Executes the real RAG pipeline via rag_chain.get_chain().
+    Grounded with inline citations and guardrails.
     """
-    raise NotImplementedError(
-        "Real RAG pipeline not wired in yet. Set USE_STUB = True to use the mock."
-    )
+    try:
+        from rag_chain import get_chain
+        chain = get_chain()
+        response = chain.ask(query=query)
+
+        sources = []
+        if response.citations:
+            for c in response.citations:
+                source_parts = [c.get("source_file", "unknown")]
+                if c.get("ticker") and c.get("ticker") != "N/A":
+                    source_parts.append(f"Ticker: {c.get('ticker')}")
+                if c.get("date") and c.get("date") != "N/A":
+                    source_parts.append(f"Date: {c.get('date')}")
+                source_str = " | ".join(source_parts)
+                if source_str not in sources:
+                    sources.append(source_str)
+
+        return {
+            "answer": response.answer,
+            "sources": sources,
+        }
+    except RuntimeError as e:
+        if "EmbeddingStore is empty" in str(e):
+            logger.warning("Vector store is not indexed yet. Please run run_pipeline.py first.")
+            return {
+                "answer": (
+                    "The vector database has not been built yet. "
+                    "Please run `python run_pipeline.py <path_to_data>` to index the financial datasets."
+                ),
+                "sources": [],
+            }
+        logger.exception("Error in real RAG query execution: %s", e)
+        raise e
+    except Exception as e:
+        logger.exception("Error in real RAG query execution: %s", e)
+        raise e
 
 
 # ===========================================================================
