@@ -12,7 +12,14 @@ API CONTRACT (share this with your frontend teammate):
 
   POST /chat
     Request body:  { "session_id": str, "message": str }
-    Response body: { "session_id": str, "reply": str, "sources": list[str] }
+    Response body: {
+      "session_id": str,
+      "reply": str,
+      "sources": [{"doc_title": str, "chunk_text": str, "score": float,
+                   "ticker": str, "date": str}],
+      "latency_ms": int,
+      "is_grounded": bool
+    }
     Error 422:     invalid request body (missing fields, wrong types)
     Error 503:     LLM or retrieval pipeline is unavailable
     Error 500:     unexpected internal error
@@ -27,6 +34,7 @@ API CONTRACT (share this with your frontend teammate):
 
 import logging
 import asyncio
+import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -54,11 +62,22 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="The user's message")
 
 
+class SourceItem(BaseModel):
+    """A single retrieved source chunk with metadata."""
+    doc_title: str = ""
+    chunk_text: str = ""
+    score: float = 0.0
+    ticker: str = ""
+    date: str = ""
+
+
 class ChatResponse(BaseModel):
     """What we send back to the frontend."""
     session_id: str
     reply: str
-    sources: list[str]
+    sources: list[SourceItem]
+    latency_ms: int = 0
+    is_grounded: bool = True
 
 
 class ResetRequest(BaseModel):
@@ -111,11 +130,13 @@ async def chat(request: ChatRequest):
 
     # Step 2 — call the RAG pipeline (wrapped in asyncio.to_thread because
     #           rag_query may do blocking I/O — chroma queries, HTTP calls)
+    start_time = time.perf_counter()
     try:
         result = await asyncio.wait_for(
             asyncio.to_thread(rag_query, request.message, history),
             timeout=config.LLM_TIMEOUT_SECONDS,
         )
+        latency_ms = int((time.perf_counter() - start_time) * 1000)
     except asyncio.TimeoutError:
         logger.warning("RAG pipeline timed out | session=%s", request.session_id)
         raise HTTPException(
@@ -145,7 +166,41 @@ async def chat(request: ChatRequest):
 
     # Step 3 — validate that the RAG result has the expected shape
     reply = result.get("answer", "").strip()
-    sources = result.get("sources", [])
+    raw_sources = result.get("sources", [])
+
+    # Parse sources into structured SourceItem objects
+    # Handles both flat strings ("file.csv | Ticker: X | Date: Y")
+    # and dicts from the real pipeline
+    parsed_sources = []
+    for src in raw_sources:
+        if isinstance(src, dict):
+            parsed_sources.append(SourceItem(
+                doc_title=src.get("doc_title", src.get("source_file", "")),
+                chunk_text=src.get("chunk_text", src.get("text", "")),
+                score=src.get("score", src.get("relevance_score", 0.0)),
+                ticker=src.get("ticker", ""),
+                date=src.get("date", ""),
+            ))
+        elif isinstance(src, str):
+            # Parse flat string: "file.csv | Ticker: AAPL | Date: 2024-09-30"
+            parts = src.split(" | ")
+            doc_title = parts[0] if parts else src
+            ticker = ""
+            date = ""
+            for part in parts[1:]:
+                if part.startswith("Ticker: "):
+                    ticker = part.replace("Ticker: ", "")
+                elif part.startswith("Date: "):
+                    date = part.replace("Date: ", "")
+            parsed_sources.append(SourceItem(
+                doc_title=doc_title,
+                chunk_text=src,
+                score=0.8,
+                ticker=ticker,
+                date=date,
+            ))
+
+    is_grounded = len(parsed_sources) > 0
 
     # If the pipeline returned an empty answer, give a graceful fallback
     if not reply:
@@ -153,18 +208,22 @@ async def chat(request: ChatRequest):
             "I couldn't find relevant information to answer that question. "
             "Try rephrasing, or ask about a different finance topic."
         )
+        is_grounded = False
 
     # Step 4 — persist this turn to session history
     add_turn(request.session_id, request.message, reply)
 
     logger.info(
-        "Chat response | session=%s | sources=%d", request.session_id, len(sources)
+        "Chat response | session=%s | sources=%d | latency=%dms",
+        request.session_id, len(parsed_sources), latency_ms,
     )
 
     return ChatResponse(
         session_id=request.session_id,
         reply=reply,
-        sources=sources,
+        sources=parsed_sources,
+        latency_ms=latency_ms,
+        is_grounded=is_grounded,
     )
 
 
