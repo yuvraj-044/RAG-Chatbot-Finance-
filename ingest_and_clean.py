@@ -212,22 +212,25 @@ class FinancialStatementCleaner:
         ready for chunking, with metadata attached.
         """
         docs = []
-        meta_cols = ["__source_file", "__data_category", "__ticker"]
-
-        for _, row in df.iterrows():
-            meta = {col.lstrip("_"): row[col] for col in meta_cols}
+        records = df.to_dict("records")
+        for row in records:
+            meta = {
+                "source_file": row.get("__source_file", "unknown"),
+                "data_category": row.get("__data_category", "financial_statement"),
+                "ticker": row.get("__ticker", "UNKNOWN"),
+            }
             # Identify the primary date field for citation
             date_val = None
-            for col in row.index:
+            for col in row:
                 if any(p in col for p in ["date", "period", "quarter"]):
                     date_val = row[col]
                     break
-            meta["date"] = date_val or "N/A"
+            meta["date"] = str(date_val) if date_val is not None else "N/A"
 
             # Build human-readable text block from all data columns
-            data_cols = [c for c in row.index if not c.startswith("__")]
+            data_cols = [c for c in row if not c.startswith("__")]
             lines = [f"  {col.replace('_',' ').title()}: {row[col]}"
-                     for col in data_cols if pd.notna(row[col])]
+                     for col in data_cols if pd.notna(row[col]) and row[col] not in ("", "N/A", "nan")]
             text = (
                 f"[Financial Record]\n"
                 f"Source : {meta['source_file']} | Ticker: {meta['ticker']}\n"
@@ -303,16 +306,17 @@ class TransactionDataCleaner:
     def to_text_chunks(self, df: pd.DataFrame) -> list[dict]:
         """Convert transaction rows into readable text documents with metadata."""
         docs = []
-        for _, row in df.iterrows():
+        records = df.to_dict("records")
+        for row in records:
             meta = {
                 "source_file": row.get("__source_file", "unknown"),
                 "data_category": row.get("__data_category", "transaction_record"),
                 "ticker": "N/A",
-                "date": row.get("trans_date", row.get("date", "N/A")),
+                "date": str(row.get("trans_date", row.get("date", "N/A"))),
             }
-            data_cols = [c for c in row.index if not c.startswith("__")]
+            data_cols = [c for c in row if not c.startswith("__")]
             lines = [f"  {col.replace('_',' ').title()}: {row[col]}"
-                     for col in data_cols if pd.notna(row[col]) and str(row[col]) != "N/A"]
+                     for col in data_cols if pd.notna(row[col]) and str(row[col]) not in ("N/A", "", "nan", "None")]
             text = (
                 f"[Transaction Record]\n"
                 f"Source : {meta['source_file']}\n"
@@ -331,9 +335,21 @@ class MarketDataCleaner:
     Covers : Market index prices, volumes, historical OHLCV data.
     """
 
+    _LARGE_FILE_THRESHOLD = 20 * 1024 * 1024   # 20 MB
+    _LARGE_FILE_SAMPLE    = 2000               # max rows
+
     def load_csv(self, filepath: Path) -> pd.DataFrame:
         logger.info("Loading market CSV: %s", filepath.name)
-        df = pd.read_csv(filepath, low_memory=False)
+        size = filepath.stat().st_size
+        if size > self._LARGE_FILE_THRESHOLD:
+            logger.warning(
+                "Large market file (%.1f MB) — sampling %d rows.",
+                size / 1e6, self._LARGE_FILE_SAMPLE,
+            )
+            df = pd.read_csv(filepath, nrows=self._LARGE_FILE_SAMPLE, low_memory=False)
+        else:
+            df = pd.read_csv(filepath, low_memory=False)
+
         df.columns = [re.sub(r"[\s\-/]+", "_", c.strip()).lower() for c in df.columns]
         df = self._clean_numeric_cols(df)
         df = self._standardize_date_cols(df)
@@ -374,16 +390,17 @@ class MarketDataCleaner:
 
     def df_to_text_chunks(self, df: pd.DataFrame) -> list[dict]:
         docs = []
-        for _, row in df.iterrows():
+        records = df.to_dict("records")
+        for row in records:
             meta = {
                 "source_file": row.get("__source_file", "unknown"),
                 "data_category": row.get("__data_category", "market_index"),
                 "ticker": str(row.get("symbol", row.get("index_name", "MARKET"))),
                 "date": str(row.get("date", row.get("trade_date", "N/A"))),
             }
-            data_cols = [c for c in row.index if not c.startswith("__")]
+            data_cols = [c for c in row if not c.startswith("__")]
             lines = [f"  {col.replace('_',' ').title()}: {row[col]}"
-                     for col in data_cols if pd.notna(row[col])]
+                     for col in data_cols if pd.notna(row[col]) and row[col] not in ("", "N/A", "nan")]
             text = (
                 f"[Market Index Record]\n"
                 f"Source : {meta['source_file']} | Symbol: {meta['ticker']}\n"
