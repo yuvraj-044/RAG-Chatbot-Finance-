@@ -3,7 +3,7 @@ export default function SourceChip({ count, onClick }) {
 
   return (
     <button className="source-chip" onClick={onClick}>
-      📄 View Sources ({count})
+      Sources ({count})
     </button>
   );
 }

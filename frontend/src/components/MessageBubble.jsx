@@ -23,7 +23,7 @@ export default function MessageBubble({ message, isLatest, onViewSources }) {
   return (
     <div className={`message-row ${isUser ? "user" : "bot"}`}>
       <div className={`message-avatar ${isUser ? "user" : "bot"}`}>
-        {isUser ? "👤" : "🏦"}
+        {isUser ? "You" : "AI"}
       </div>
 
       <div className="message-content">
@@ -48,15 +48,15 @@ export default function MessageBubble({ message, isLatest, onViewSources }) {
                 <span
                   className={`grounded-badge ${message.is_grounded ? "grounded" : "ungrounded"}`}
                 >
-                  {message.is_grounded ? "✓ Grounded" : "⚠ Unverified"}
+                  {message.is_grounded ? "Grounded" : "Unverified"}
                 </span>
               )}
             </div>
 
             {/* Show empty state when bot has no sources */}
-            {message.sources &&
-              message.sources.length === 0 &&
-              !message.is_grounded && <EmptyState />}
+            {message.is_grounded === false && (
+              <EmptyState hasSources={(message.sources?.length || 0) > 0} />
+            )}
           </>
         )}
       </div>

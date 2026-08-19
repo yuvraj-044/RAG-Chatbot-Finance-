@@ -80,6 +80,39 @@ class ChatResponse(BaseModel):
     is_grounded: bool = True
 
 
+def _format_unverified_reply(original_message: str, sources: list[SourceItem]) -> str:
+    """
+    Convert a hard RAG refusal into a helpful UI response without adding
+    unsupported financial facts.
+    """
+    closest = []
+    seen = set()
+    for source in sources[:3]:
+        title = source.doc_title or "Unknown source"
+        ticker = source.ticker or "N/A"
+        date = source.date or "N/A"
+        key = (title, ticker, date)
+        if key in seen:
+            continue
+        seen.add(key)
+        closest.append(f"- {title} | Ticker: {ticker} | Date: {date}")
+
+    closest_block = "\n".join(closest) if closest else "- No nearby indexed sources were returned."
+
+    return (
+        "## I could not verify that from the indexed dataset\n"
+        f"I searched the available finance records for: **{original_message.strip()}**\n\n"
+        "The retrieved context did not contain enough verified evidence to answer that exact question. "
+        "I will not invent a number or explanation that is not supported by your data.\n\n"
+        "## Closest Indexed Records\n"
+        f"{closest_block}\n\n"
+        "## Try Asking\n"
+        "- Ask for OHLC yearly summaries by ticker and year.\n"
+        "- Include a ticker, date range, metric name, or dataset category.\n"
+        "- Ask me to summarize the closest retrieved records."
+    )
+
+
 class ResetRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
 
@@ -200,7 +233,12 @@ async def chat(request: ChatRequest):
                 date=date,
             ))
 
-    is_grounded = len(parsed_sources) > 0
+    is_grounded = result.get("is_grounded")
+    if is_grounded is None:
+        is_grounded = len(parsed_sources) > 0
+    if "cannot find verified records" in reply.lower():
+        is_grounded = False
+        reply = _format_unverified_reply(request.message, parsed_sources)
 
     # If the pipeline returned an empty answer, give a graceful fallback
     if not reply:

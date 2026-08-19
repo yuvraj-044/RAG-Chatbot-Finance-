@@ -31,16 +31,8 @@ export default function SourceDrawer({ sources, onClose }) {
       <aside className={`source-drawer ${isClosing ? "closing" : ""}`}>
         <div className="drawer-header">
           <h3>
-            📄 Retrieved Sources
-            <span
-              style={{
-                fontSize: "var(--font-size-xs)",
-                color: "var(--text-tertiary)",
-                fontWeight: 400,
-              }}
-            >
-              ({sources.length})
-            </span>
+            Retrieved Sources
+            <span className="drawer-count">{sources.length}</span>
           </h3>
           <button
             className="drawer-close"
@@ -59,12 +51,11 @@ export default function SourceDrawer({ sources, onClose }) {
             return (
               <div
                 className="source-card"
-                key={index}
-                style={{ animationDelay: `${index * 80}ms` }}
+                key={`${source.doc_title}-${index}`}
               >
                 <div className="source-card-header">
                   <span className="source-card-title">
-                    📄 {source.doc_title}
+                    {source.doc_title}
                   </span>
                   {source.date && (
                     <span className="source-card-date">{source.date}</span>
@@ -72,13 +63,7 @@ export default function SourceDrawer({ sources, onClose }) {
                 </div>
 
                 {source.ticker && (
-                  <span
-                    style={{
-                      fontSize: "var(--font-size-xs)",
-                      color: "var(--accent-secondary)",
-                      fontWeight: 500,
-                    }}
-                  >
+                  <span className="source-card-ticker">
                     Ticker: {source.ticker}
                   </span>
                 )}

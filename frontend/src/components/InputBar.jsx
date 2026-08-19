@@ -39,7 +39,7 @@ export default function InputBar({ onSend, disabled }) {
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask about financial data, reports, or compliance..."
+          placeholder="Ask a finance question, compare companies, or request evidence..."
           disabled={disabled}
           autoComplete="off"
           aria-label="Chat input"
@@ -50,11 +50,11 @@ export default function InputBar({ onSend, disabled }) {
           disabled={!value.trim() || disabled}
           aria-label="Send message"
         >
-          ↑
+          <span aria-hidden="true">↑</span>
         </button>
       </form>
       <div className="input-hint">
-        Press Enter to send · FinSight may produce inaccurate information
+        Enter sends. Use sourced answers for decisions, and verify critical facts.
       </div>
     </div>
   );

@@ -35,6 +35,8 @@ import argparse
 import logging
 import time
 import uuid
+import warnings
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -48,6 +50,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+warnings.filterwarnings("ignore", message="Could not infer format.*", category=UserWarning)
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -58,6 +61,8 @@ EMBED_MODEL          = "BAAI/bge-small-en-v1.5"   # ~130 MB, no API key needed
 PROGRESS_FILE        = "./ingestion_progress.json"
 TARGET_TOKENS        = 600
 OVERLAP_TOKENS       = 100
+LARGE_TABULAR_SUMMARY_THRESHOLD_MB = 100
+TRANSACTION_SUMMARY_THRESHOLD_MB = 10
 
 # Supported file extensions. The provided stock dataset uses CSV-formatted
 # .txt files, so .txt is intentionally included.
@@ -388,6 +393,181 @@ def process_ohlcv_file(filepath: Path, embedder: Embedder, collection) -> int:
     return written
 
 
+def _delete_existing_source_chunks(collection, source_file: str) -> None:
+    """Remove partial row-level chunks before replacing a large file with summaries."""
+    try:
+        collection.delete(where={"source_file": source_file})
+        logger.info("Deleted any existing chunks for %s before summary ingest.", source_file)
+    except Exception as exc:
+        logger.warning("Could not delete existing chunks for %s: %s", source_file, exc)
+
+
+def process_large_tabular_summary(
+    filepath: Path,
+    embedder: Embedder,
+    collection,
+) -> int:
+    """
+    Summarize very large non-OHLCV CSVs instead of embedding every row.
+
+    Transaction-level tables can contain millions of near-duplicate rows. For
+    chatbot retrieval, compact statistical and sample chunks are more useful,
+    much faster, and keep the vector DB responsive.
+    """
+    source_file = filepath.name
+    data_category = _infer_category(filepath)
+    file_size_mb = filepath.stat().st_size / 1_000_000
+    logger.info("Processing large CSV summary: %s (%.1f MB)", source_file, file_size_mb)
+
+    _delete_existing_source_chunks(collection, source_file)
+
+    total_rows = 0
+    columns: list[str] = []
+    numeric_stats: dict[str, dict[str, float]] = {}
+    missing_counts: Counter[str] = Counter()
+    categorical_counts: dict[str, Counter[str]] = {}
+    date_ranges: dict[str, list[pd.Timestamp | None]] = {}
+    samples: list[dict] = []
+    tail_samples: list[dict] = []
+    max_samples = 25
+    max_categorical_cols = 14
+    max_numeric_cols = 60
+    chunk_rows = 50_000
+
+    try:
+        reader = pd.read_csv(filepath, chunksize=chunk_rows, low_memory=False, on_bad_lines="skip")
+    except Exception as exc:
+        logger.error("Cannot open %s: %s", source_file, exc)
+        return 0
+
+    for batch_num, df_batch in enumerate(reader, start=1):
+        df_batch.columns = [
+            c.strip().lower().replace(" ", "_").replace("-", "_")
+            for c in df_batch.columns
+        ]
+        if not columns:
+            columns = list(df_batch.columns)
+
+        total_rows += len(df_batch)
+        missing_counts.update(df_batch.isna().sum().to_dict())
+
+        if len(samples) < max_samples:
+            samples.extend(df_batch.head(max_samples - len(samples)).to_dict("records"))
+        tail_samples = df_batch.tail(10).to_dict("records")
+
+        for col in df_batch.columns[:max_numeric_cols]:
+            numeric = pd.to_numeric(df_batch[col], errors="coerce")
+            valid = numeric.dropna()
+            if valid.empty:
+                continue
+            stats = numeric_stats.setdefault(
+                col,
+                {"count": 0.0, "sum": 0.0, "min": float("inf"), "max": float("-inf")},
+            )
+            stats["count"] += float(valid.count())
+            stats["sum"] += float(valid.sum())
+            stats["min"] = min(stats["min"], float(valid.min()))
+            stats["max"] = max(stats["max"], float(valid.max()))
+
+        likely_text_cols = [
+            c for c in df_batch.columns
+            if any(token in c for token in ("category", "merchant", "city", "state", "country", "type", "gender", "use_chip", "errors", "brand"))
+        ][:max_categorical_cols]
+        for col in likely_text_cols:
+            counter = categorical_counts.setdefault(col, Counter())
+            values = df_batch[col].dropna().astype(str).str.strip()
+            counter.update(v for v in values if v and v.lower() not in {"nan", "none", "n/a"})
+            categorical_counts[col] = Counter(dict(counter.most_common(50)))
+
+        likely_date_cols = [c for c in df_batch.columns if "date" in c or "time" in c][:8]
+        for col in likely_date_cols:
+            dates = pd.to_datetime(df_batch[col], errors="coerce")
+            valid_dates = dates.dropna()
+            if valid_dates.empty:
+                continue
+            current = date_ranges.setdefault(col, [None, None])
+            batch_min = valid_dates.min()
+            batch_max = valid_dates.max()
+            current[0] = batch_min if current[0] is None else min(current[0], batch_min)
+            current[1] = batch_max if current[1] is None else max(current[1], batch_max)
+
+        if batch_num % 20 == 0:
+            logger.info("  %s | summarized %d rows so far", source_file, total_rows)
+
+        del df_batch
+
+    def clean_value(value) -> str:
+        if pd.isna(value):
+            return ""
+        return str(value).strip()
+
+    texts: list[str] = []
+    metadatas: list[dict] = []
+    ids: list[str] = []
+
+    schema_text = (
+        f"[Large {data_category.replace('_', ' ').title()} Dataset Summary]\n"
+        f"Source: {source_file}\n"
+        f"File size MB: {file_size_mb:.2f}\n"
+        f"Rows scanned: {total_rows:,}\n"
+        f"Columns: {', '.join(columns)}"
+    )
+    if date_ranges:
+        ranges = [
+            f"{col}: {bounds[0].date()} to {bounds[1].date()}"
+            for col, bounds in date_ranges.items()
+            if bounds[0] is not None and bounds[1] is not None
+        ]
+        schema_text += "\nDate/time ranges:\n" + "\n".join(f"- {line}" for line in ranges)
+    texts.append(schema_text)
+    metadatas.append({"source_file": source_file, "data_category": data_category, "ticker": "N/A", "date": "summary"})
+    ids.append(_stable_chunk_id(filepath, "large-summary-schema"))
+
+    numeric_lines = []
+    for col, stats in sorted(numeric_stats.items()):
+        mean = stats["sum"] / stats["count"] if stats["count"] else 0
+        numeric_lines.append(
+            f"- {col}: count={int(stats['count']):,}, min={stats['min']:.4f}, max={stats['max']:.4f}, mean={mean:.4f}"
+        )
+    if numeric_lines:
+        for chunk_idx, chunk_text in enumerate(_chunk_text("\n".join(numeric_lines))):
+            texts.append(f"[Large Dataset Numeric Profile]\nSource: {source_file}\n{chunk_text}")
+            metadatas.append({"source_file": source_file, "data_category": data_category, "ticker": "N/A", "date": "numeric-profile"})
+            ids.append(_stable_chunk_id(filepath, f"large-summary-numeric-{chunk_idx}"))
+
+    category_lines = []
+    for col, counter in sorted(categorical_counts.items()):
+        values = ", ".join(f"{value} ({count})" for value, count in counter.most_common(10))
+        category_lines.append(f"- {col}: {values}")
+    if category_lines:
+        texts.append(f"[Large Dataset Category Profile]\nSource: {source_file}\n" + "\n".join(category_lines))
+        metadatas.append({"source_file": source_file, "data_category": data_category, "ticker": "N/A", "date": "category-profile"})
+        ids.append(_stable_chunk_id(filepath, "large-summary-categories"))
+
+    missing_lines = [f"- {col}: {int(count):,}" for col, count in missing_counts.most_common(40) if count]
+    if missing_lines:
+        texts.append(f"[Large Dataset Missing Value Profile]\nSource: {source_file}\n" + "\n".join(missing_lines))
+        metadatas.append({"source_file": source_file, "data_category": data_category, "ticker": "N/A", "date": "missing-profile"})
+        ids.append(_stable_chunk_id(filepath, "large-summary-missing"))
+
+    sample_rows = samples + tail_samples
+    for row_idx, row in enumerate(sample_rows[:35]):
+        line_parts = []
+        for col in columns[:30]:
+            value = clean_value(row.get(col))
+            if value:
+                line_parts.append(f"{col}={value}")
+        if not line_parts:
+            continue
+        texts.append(f"[Large Dataset Representative Row]\nSource: {source_file}\n" + "; ".join(line_parts))
+        metadatas.append({"source_file": source_file, "data_category": data_category, "ticker": "N/A", "date": f"sample-{row_idx}"})
+        ids.append(_stable_chunk_id(filepath, f"large-summary-sample-{row_idx}"))
+
+    written = _embed_and_upsert(collection, embedder, texts, metadatas, ids)
+    logger.info("  %s -> %d large summary chunks written from %d rows.", source_file, written, total_rows)
+    return written
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 7.  PROCESS A SINGLE CSV FILE IN BATCHES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -433,11 +613,12 @@ def _process_tabular_file(
         chunk_metas: list[dict] = []
         chunk_ids:   list[str] = []
 
-        for doc in docs:
-            for chunk_text in _chunk_text(doc["text"]):
+        for row_idx, doc in enumerate(docs):
+            for chunk_idx, chunk_text in enumerate(_chunk_text(doc["text"])):
                 chunk_texts.append(chunk_text)
                 chunk_metas.append(doc["metadata"])
-                chunk_ids.append(str(uuid.uuid4()))
+                stable_label = f"batch-{batch_num}-row-{row_idx}-chunk-{chunk_idx}"
+                chunk_ids.append(_stable_chunk_id(filepath, stable_label))
 
         if not chunk_texts:
             continue
@@ -465,6 +646,14 @@ def process_csv_file(
     data_category = _infer_category(filepath)
     if data_category in {"stock_ohlcv", "etf_ohlcv"}:
         return process_ohlcv_file(filepath, embedder, collection)
+
+    file_size_mb = filepath.stat().st_size / 1_000_000
+    if (
+        file_size_mb >= LARGE_TABULAR_SUMMARY_THRESHOLD_MB
+        or (data_category == "transaction_record" and file_size_mb >= TRANSACTION_SUMMARY_THRESHOLD_MB)
+    ):
+        return process_large_tabular_summary(filepath, embedder, collection)
+
     try:
         preview = pd.read_csv(filepath, nrows=5, low_memory=False, on_bad_lines="skip")
         preview_cols = {
@@ -516,11 +705,12 @@ def process_json_file(filepath: Path, embedder: Embedder, collection) -> int:
         return 0
 
     chunk_texts, chunk_metas, chunk_ids = [], [], []
-    for doc in docs:
-        for chunk_text in _chunk_text(doc["text"]):
+    for row_idx, doc in enumerate(docs):
+        for chunk_idx, chunk_text in enumerate(_chunk_text(doc["text"])):
             chunk_texts.append(chunk_text)
             chunk_metas.append(doc["metadata"])
-            chunk_ids.append(str(uuid.uuid4()))
+            stable_label = f"json-row-{row_idx}-chunk-{chunk_idx}"
+            chunk_ids.append(_stable_chunk_id(filepath, stable_label))
 
     if not chunk_texts:
         return 0

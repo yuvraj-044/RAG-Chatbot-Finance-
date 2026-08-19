@@ -1,18 +1,18 @@
 const CHIPS = [
   {
-    icon: "📊",
+    label: "Revenue",
     text: "What was AAPL's quarterly revenue and net income?",
   },
   {
-    icon: "🔍",
+    label: "Fraud",
     text: "Show credit card fraud detection patterns",
   },
   {
-    icon: "📈",
+    label: "Market",
     text: "What are the latest NSE NIFTY 50 index trends?",
   },
   {
-    icon: "🏦",
+    label: "Compare",
     text: "Compare the balance sheet of MSFT vs AAPL",
   },
 ];
@@ -21,12 +21,12 @@ export default function StarterChips({ onSelect }) {
   return (
     <div className="starter-section">
       <div className="starter-hero">
-        <span className="starter-hero-icon">🏦</span>
-        <h2>FinSight AI</h2>
+        <span className="starter-eyebrow">Grounded financial research</span>
+        <h2>Ask sharp questions. Get cited answers.</h2>
         <p>
-          Your AI-powered financial research assistant. Ask about quarterly
-          financials, transaction fraud analysis, NSE market indices, and
-          balance sheet comparisons — backed by real document citations.
+          FinSight combines your RAG pipeline with a focused analyst-style
+          workspace for filings, ratios, transaction patterns, market indices,
+          and document-backed comparisons.
         </p>
       </div>
       <div className="starter-chips">
@@ -36,8 +36,8 @@ export default function StarterChips({ onSelect }) {
             className="starter-chip"
             onClick={() => onSelect(chip.text)}
           >
-            <span className="starter-chip-icon">{chip.icon}</span>
-            {chip.text}
+            <span className="starter-chip-label">{chip.label}</span>
+            <span>{chip.text}</span>
           </button>
         ))}
       </div>

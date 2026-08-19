@@ -63,18 +63,21 @@ def _real_rag_query(query: str, history: list[dict]) -> dict:
         sources = []
         if response.citations:
             for c in response.citations:
-                source_parts = [c.get("source_file", "unknown")]
-                if c.get("ticker") and c.get("ticker") != "N/A":
-                    source_parts.append(f"Ticker: {c.get('ticker')}")
-                if c.get("date") and c.get("date") != "N/A":
-                    source_parts.append(f"Date: {c.get('date')}")
-                source_str = " | ".join(source_parts)
-                if source_str not in sources:
-                    sources.append(source_str)
+                source = {
+                    "doc_title": c.get("source_file", "unknown"),
+                    "source_file": c.get("source_file", "unknown"),
+                    "chunk_text": c.get("text", ""),
+                    "score": c.get("score", 0.0),
+                    "ticker": c.get("ticker", ""),
+                    "date": c.get("date", ""),
+                }
+                if source not in sources:
+                    sources.append(source)
 
         return {
             "answer": response.answer,
             "sources": sources,
+            "is_grounded": response.is_grounded,
         }
     except RuntimeError as e:
         if "EmbeddingStore is empty" in str(e):

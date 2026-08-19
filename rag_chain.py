@@ -42,7 +42,7 @@ _CHAT_BACKEND: ChatBackend = os.environ.get(
 )  # type: ignore
 
 _GROQ_API_KEY     = os.environ.get("GROQ_API_KEY", "")
-_GROQ_MODEL       = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+_GROQ_MODEL       = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 _GEMINI_API_KEY   = os.environ.get("GEMINI_API_KEY", "")
 _GEMINI_CHAT_MODEL= os.environ.get("GEMINI_CHAT_MODEL", "gemini-1.5-flash")
@@ -84,18 +84,18 @@ question, you MUST respond with this exact sentence and nothing else:
   Do NOT attempt a partial answer. Do NOT apologise or elaborate further.
 
 RULE 4 — STRUCTURED RESPONSE FORMAT
-  Always format your answer as follows:
-  ┌─────────────────────────────────────────────┐
-  │ ANSWER                                      │
-  │  <your grounded answer with inline citations>│
-  │                                             │
-  │ SOURCES CITED                               │
-  │  • <source_file> | <ticker> | <date>        │
-  │  (one bullet per unique source used)        │
-  └─────────────────────────────────────────────┘
+  When you have sufficient context, format your answer as clean Markdown:
+      ## Answer
+      <concise grounded answer with inline citations>
+
+      ## Sources Cited
+      - <source_file> | <ticker> | <date>
+      - <source_file> | <ticker> | <date>
+  Do not draw boxes, tables, banners, or decorative ASCII frames.
 
 RULE 5 — TONE
-  Be concise, precise, and professional. Avoid filler phrases.
+  Be concise, precise, and professional. Prefer direct analysis, short bullets,
+  and clear comparisons. Avoid filler phrases.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -338,7 +338,7 @@ def _apply_guardrails(
             "Model response lacks [SOURCE:] citations — appending warning."
         )
         answer += (
-            "\n\n⚠️  Note: This response may lack proper source citations. "
+            "\n\nNote: This response may lack proper source citations. "
             "Please verify against the original dataset."
         )
 

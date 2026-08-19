@@ -21,7 +21,7 @@ load_dotenv()
 GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
 # Which Groq model to use. llama-3.1-8b-instant is fast and free-tier friendly.
 # Swap to "llama-3.1-70b-versatile" for better quality if your quota allows.
-GROQ_MODEL: str = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_MODEL: str = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 # ---------------------------------------------------------------------------
 # ChromaDB settings
