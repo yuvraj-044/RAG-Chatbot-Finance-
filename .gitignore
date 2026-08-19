@@ -21,9 +21,11 @@ dist/
 build/
 
 # --- ChromaDB data ---
-# Uncomment the line below if the index is too large to commit.
-# Your teammate should provide it as a separate artifact.
-# chroma_db/
+# Too large for GitHub (files exceed 100 MB limit). Generate locally by running ingest_large.py.
+chroma_db/
+
+# --- Ingestion state ---
+ingestion_progress.json
 
 # --- IDE ---
 .vscode/

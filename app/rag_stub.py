@@ -82,7 +82,7 @@ def _real_rag_query(query: str, history: list[dict]) -> dict:
             return {
                 "answer": (
                     "The vector database has not been built yet. "
-                    "Please run `python run_pipeline.py <path_to_data>` to index the financial datasets."
+                    "Please run `python ingest_large.py <path_to_data>` to index the financial datasets."
                 ),
                 "sources": [],
             }

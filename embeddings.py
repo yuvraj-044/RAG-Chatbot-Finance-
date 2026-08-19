@@ -44,6 +44,9 @@ _DEFAULT_BACKEND: EmbeddingBackend = os.environ.get(          # type: ignore[ass
 _ST_MODEL   = os.environ.get("ST_MODEL",     "BAAI/bge-small-en-v1.5")
 _GEMINI_MODEL = os.environ.get("GEMINI_EMB_MODEL", "models/text-embedding-004")
 _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+_VECTOR_STORE_BACKEND = os.environ.get("VECTOR_STORE_BACKEND", "chroma").lower()
+_CHROMA_PERSIST_DIR = os.environ.get("CHROMA_PERSIST_DIR", "./chroma_db")
+_CHROMA_COLLECTION_NAME = os.environ.get("CHROMA_COLLECTION_NAME", "finance_docs")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -334,11 +337,126 @@ class EmbeddingStore:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3. CONVENIENCE FUNCTION — for Member 2 (Backend) to call from API handlers
+# 3. CHROMADB VECTOR STORE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ChromaEmbeddingStore:
+    """
+    Query the persistent ChromaDB collection produced by ingest_large.py.
+
+    Chroma stores:
+      - ids: stable chunk/document ids
+      - embeddings: numeric vectors from the sentence-transformers model
+      - documents: chunk text
+      - metadatas: source_file, ticker, date, data_category
+    """
+
+    def __init__(
+        self,
+        backend: EmbeddingBackend = _DEFAULT_BACKEND,
+        persist_dir: str = _CHROMA_PERSIST_DIR,
+        collection_name: str = _CHROMA_COLLECTION_NAME,
+    ):
+        self.backend = get_backend(backend)
+        self.persist_dir = persist_dir
+        self.collection_name = collection_name
+
+        import chromadb  # type: ignore
+        self.client = chromadb.PersistentClient(path=persist_dir)
+        self.collection = self.client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+        logger.info(
+            "ChromaDB collection '%s' opened from %s. Vectors: %d",
+            collection_name,
+            persist_dir,
+            self.collection.count(),
+        )
+
+    def search(
+        self,
+        query: str,
+        k: int = 3,
+        filter_category: str | None = None,
+        filter_ticker: str | None = None,
+    ) -> list[dict]:
+        """Embed a query and return Top-K chunks from ChromaDB."""
+        if self.collection.count() == 0:
+            raise RuntimeError(
+                "ChromaDB collection is empty. Run "
+                "`python ingest_large.py <path_to_data_folder>` first."
+            )
+
+        where = _build_chroma_where(filter_category, filter_ticker)
+        q_vec = self.backend.embed_single(query)
+        q_vec = q_vec / (np.linalg.norm(q_vec) + 1e-10)
+
+        query_kwargs = {
+            "query_embeddings": [q_vec.tolist()],
+            "n_results": k,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            query_kwargs["where"] = where
+
+        raw = self.collection.query(**query_kwargs)
+        ids = raw.get("ids", [[]])[0]
+        documents = raw.get("documents", [[]])[0]
+        metadatas = raw.get("metadatas", [[]])[0]
+        distances = raw.get("distances", [[]])[0]
+
+        results = []
+        for rank, (chunk_id, text, metadata, distance) in enumerate(
+            zip(ids, documents, metadatas, distances),
+            start=1,
+        ):
+            meta = dict(metadata or {})
+            # Chroma cosine distance is lower-is-better. Convert to a familiar
+            # higher-is-better relevance score for the RAG guardrails/UI.
+            score = max(0.0, 1.0 - float(distance))
+            results.append({
+                "rank": rank,
+                "score": float(round(score, 6)),
+                "chunk_id": chunk_id,
+                "text": text or "",
+                "source_file": meta.get("source_file", "unknown"),
+                "ticker": meta.get("ticker", "N/A"),
+                "date": meta.get("date", "N/A"),
+                "data_category": meta.get("data_category", "unknown"),
+                **meta,
+            })
+
+        return results
+
+    @property
+    def size(self) -> int:
+        return self.collection.count()
+
+
+def _build_chroma_where(
+    filter_category: str | None = None,
+    filter_ticker: str | None = None,
+) -> dict | None:
+    clauses = []
+    if filter_category:
+        clauses.append({"data_category": {"$eq": filter_category}})
+    if filter_ticker:
+        clauses.append({"ticker": {"$eq": filter_ticker.upper()}})
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. CONVENIENCE FUNCTION — for Member 2 (Backend) to call from API handlers
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Global singleton — lazily loaded on first import
 _store: EmbeddingStore | None = None
+_chroma_store: ChromaEmbeddingStore | None = None
 
 
 def get_store(
@@ -379,10 +497,27 @@ def similarity_search(
     Returns
         list[dict] — Top-K chunks with score + all metadata
     """
+    if _VECTOR_STORE_BACKEND == "chroma":
+        global _chroma_store
+        if _chroma_store is None:
+            _chroma_store = ChromaEmbeddingStore(
+                persist_dir=_CHROMA_PERSIST_DIR,
+                collection_name=_CHROMA_COLLECTION_NAME,
+            )
+        return _chroma_store.search(
+            query,
+            k=k,
+            filter_category=filter_category,
+            filter_ticker=filter_ticker,
+        )
+
     store = get_store(persist_path=persist_path)
-    return store.search(query, k=k,
-                        filter_category=filter_category,
-                        filter_ticker=filter_ticker)
+    return store.search(
+        query,
+        k=k,
+        filter_category=filter_category,
+        filter_ticker=filter_ticker,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
